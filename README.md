@@ -3,10 +3,10 @@
 **Waste_Ur_Time** is a Python script designed to brute-force Playstation 4 Package passcodes aka to Waste_Ur_Time
 
 # Features
-Able to Bruteforce ✅
-Threads ✅
-GPU / CPU ❌
-DataBase ❌
+  - Able to Bruteforce ✅
+  - Threads ✅
+  - GPU / CPU ❌
+  - DataBase ❌
 
 # Upcoming Features
 Let the User decide if he wants to use GPU/CPU for Bruteforcing
