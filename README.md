@@ -12,7 +12,7 @@
   - GPU / CPU ❌
   - DataBase ❌
 
-# Usuage:
+# Usage:
 
 python3 Waste_Ur_Time.py --package Your_Encrypted_PS4.pkg --output "My_Extraction_Folder" --threads 1-8
 
