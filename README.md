@@ -7,16 +7,24 @@
 ![](https://i.imgur.com/ksJ3tHV.gif)
 
 # Features
-  - Able to Bruteforce ✅
-  - Threads ✅
+  - Able to Bruteforce (Added in v1.00) ✅
+  - Threads (Added in v1.01) ✅
   - GPU / CPU ❌
   - DataBase ❌
 
+# Usuage:
+
+python3 Waste_Ur_Time.py --package Your_Encrypted_PS4.pkg --output "My_Extraction_Folder" --threads 1-8
+
 # Upcoming Features
-Let the User decide if he wants to use GPU/CPU for Bruteforcing
-Add a DataBase (Possibly Online DataBase?)
+- GPU Support
+- Database
 
 # Updates
+09/21/2023 - 1.02 Released
+  - General Improvement
+  - Changes Password Generation
+    
 09/20/2023 - 1.01 Released
   - Added Threads
   - Some Optimization
