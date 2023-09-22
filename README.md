@@ -1,6 +1,6 @@
 ## Purpose
 
-**Waste_Ur_Time** is a Python script designed to brute-force Playstation 4 Package passcodes aka to Waste_Ur_Time
+Waste_Ur_Time is now a C++ program that employs a brute force approach to guess the PlayStation 4's Package Passcode.
 
 # Preview
 
@@ -14,13 +14,19 @@
 
 # Usage:
 
-python3 Waste_Ur_Time.py --package Your_Encrypted_PS4.pkg --output "My_Extraction_Folder" --threads 1-8
+PS4_Passcode_Bruteforcer.exe MyPS4.pkg MyCoolFolder
 
 # Upcoming Features
 - GPU Support
 - Database
+- Threads in C++ Version
 
 # Updates
+
+09/23/2023 - 1.03 Released
+  - Recode, its now in C++!
+  - This software update improves Bruteforce performance. ( ͡° ͜ʖ ͡°)
+
 09/21/2023 - 1.02 Released
   - General Improvement
   - Changes Password Generation
@@ -31,3 +37,6 @@ python3 Waste_Ur_Time.py --package Your_Encrypted_PS4.pkg --output "My_Extractio
     
 09/20/2023 - 1.00 Released
   - Inital Release
+
+# Known Issues
+1.03 seems to be slower, it will be different once Threads are re-added and GPU Support is added.
