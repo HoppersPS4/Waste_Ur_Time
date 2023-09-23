@@ -4,7 +4,8 @@ Waste_Ur_Time is now a C++ program that employs a brute force approach to guess 
 
 # Preview
 
-![](https://i.imgur.com/ksJ3tHV.gif)
+![ezgif com-video-to-gif](https://github.com/HoppersPS4/Waste_Ur_Time/assets/80831610/214df483-16ec-47ba-bc77-0b695cad1843)
+
 
 # Features
   - Able to Bruteforce (Added in v1.00) ✅
