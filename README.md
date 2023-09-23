@@ -2,6 +2,8 @@
 
 Waste_Ur_Time is now a C++ program that employs a brute force approach to guess the PlayStation 4's Package Passcode.
 
+![](https://i.imgur.com/leQMFuP.png)
+
 # Preview
 
 ![ezgif com-video-to-gif](https://github.com/HoppersPS4/Waste_Ur_Time/assets/80831610/214df483-16ec-47ba-bc77-0b695cad1843)
@@ -10,19 +12,24 @@ Waste_Ur_Time is now a C++ program that employs a brute force approach to guess 
 # Features
   - Able to Bruteforce (Added in v1.00) ✅
   - Threads (Added in v1.01) ✅
-  - GPU / CPU ❌
+  - GPU / CPU (Added in v1.04) ✅
   - DataBase ❌
 
 # Usage:
 
-PS4_Passcode_Bruteforcer.exe MyPS4.pkg MyCoolFolder
+PS4_Passcode_Bruteforcer_x64.exe <package> <output> [--gpu [percentage]]
 
 # Upcoming Features
-- GPU Support
-- Database
-- Threads in C++ Version
+- Database (W.I.P)
+  
+if you would like to see more features, please make a feature request [here](https://github.com/HoppersPS4/Waste_Ur_Time/issues/new).
 
 # Updates
+
+09/23/2023 - 1.04 Released
+  - GPU Support added (use --GPU flag)
+  - General Improvement to make the program more light and faster.
+  - Added a somewhat database of Known Passcodes or already bruteforced Passcodes.
 
 09/23/2023 - 1.03 Released
   - Recode, its now in C++!
@@ -40,4 +47,5 @@ PS4_Passcode_Bruteforcer.exe MyPS4.pkg MyCoolFolder
   - Inital Release
 
 # Known Issues
-1.03 seems to be slower, it will be different once Threads are re-added and GPU Support is added.
+GPU percentage seems to be bugged.
+maybe fixed in next update
