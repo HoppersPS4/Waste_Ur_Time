@@ -28,6 +28,7 @@ if you would like to see more features, please make a feature request [here](htt
 
 09/23/2023 - 1.05 Released
 - Database now has 263 Titles!
+- https://pastebin.com/7daQHbpQ
 - GPU is even faster now!
 
 09/23/2023 - 1.04 Released
