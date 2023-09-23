@@ -8,23 +8,27 @@ Waste_Ur_Time is now a C++ program that employs a brute force approach to guess 
 
 ![ezgif com-video-to-gif](https://github.com/HoppersPS4/Waste_Ur_Time/assets/80831610/214df483-16ec-47ba-bc77-0b695cad1843)
 
-
 # Features
   - Able to Bruteforce (Added in v1.00) ✅
   - Threads (Added in v1.01) ✅
   - GPU / CPU (Added in v1.04) ✅
-  - DataBase ❌
+  - Database (Added in v1.05) ✅
 
 # Usage:
 
-PS4_Passcode_Bruteforcer_x64.exe <package> <output> [--gpu [percentage]]
+PS4_Passcode_Bruteforcer_x64.exe package output [--gpu [percentage]] 
 
 # Upcoming Features
 - Database (W.I.P)
+- Online Database
   
 if you would like to see more features, please make a feature request [here](https://github.com/HoppersPS4/Waste_Ur_Time/issues/new).
 
 # Updates
+
+09/23/2023 - 1.05 Released
+- Database now has 263 Titles!
+- GPU is even faster now!
 
 09/23/2023 - 1.04 Released
   - GPU Support added (use --GPU flag)
