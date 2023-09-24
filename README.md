@@ -33,7 +33,7 @@ if you would like to see more features, please make a feature request [here](htt
 
 09/24/2023 - 1.06 Released
 - Removed 1.05 Build because i dont want to get sued.
-- ![PS4_Passcode.txt](https://github.com/HoppersPS4/Waste_Ur_Time/README.md#ps4_passcodestxt)
+- [Saved Passcode Support](https://github.com/HoppersPS4/Waste_Ur_Time/tree/main#ps4_passcodestxt)
 
 09/23/2023 - 1.05 Released
 - Database now has 263 Titles!
