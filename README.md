@@ -21,10 +21,19 @@ PS4_Passcode_Bruteforcer_x64.exe package output [--gpu [percentage]]
 # Upcoming Features
 - Database (W.I.P)
 - Online Database
+- --silence tag to make it even faster!
   
 if you would like to see more features, please make a feature request [here](https://github.com/HoppersPS4/Waste_Ur_Time/issues/new).
 
+# PS4_Passcodes.txt
+- Obviously, i cant supply this file. Sony will sue or someone else will.
+- File is formatted like this: CONTENT-ID:PASSCODE
+
 # Updates
+
+09/24/2023 - 1.06 Released
+- Removed 1.05 Build because i dont want to get sued.
+- ![PS4_Passcode.txt](https://github.com/HoppersPS4/Waste_Ur_Time/README.md#ps4_passcodestxt)
 
 09/23/2023 - 1.05 Released
 - Database now has 263 Titles!
