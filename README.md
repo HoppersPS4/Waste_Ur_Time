@@ -1,6 +1,6 @@
 ## Purpose
 
-Waste_Ur_Time is now a C++ program that employs a brute force approach to guess the PlayStation 4's Package Passcode.
+Welcome 'Waste_Ur_Time,' a program that takes on the seemingly impossible task of bruteforcing PS4 and PS5 Package Passcodes, where success is as elusive as samsepi0l loving floppas.
 
 ![](https://i.imgur.com/leQMFuP.png)
 
@@ -12,28 +12,25 @@ Waste_Ur_Time is now a C++ program that employs a brute force approach to guess 
   - Able to Bruteforce (Added in v1.00) ✅
   - Threads (Added in v1.01) ✅
   - GPU / CPU (Added in v1.04) ✅
-  - Database (Added in v1.05) ✅
-
-# Usage:
-
-PS4_Passcode_Bruteforcer_x64.exe package output [--gpu [percentage]] 
 
 # Upcoming Features
-- Database (W.I.P)
 - Online Database
-- --silence tag to make it even faster!
   
 if you would like to see more features, please make a feature request [here](https://github.com/HoppersPS4/Waste_Ur_Time/issues/new).
 
-# PS4_Passcodes.txt
+# PS4_Passcodes.txt & PS5_Passcodes.txt
 - Obviously, i cant supply this file. Sony will sue or someone else will.
 - File is formatted like this: CONTENT-ID:PASSCODE
 
 # Updates
 
+09/29/2023 - 1.07b Released
+- alot of code cleaing for future release
+- PS5 Support
+
 09/24/2023 - 1.06 Released
 - Removed 1.05 Build because i dont want to get sued.
-- [Saved Passcode Support](https://github.com/HoppersPS4/Waste_Ur_Time/tree/main#ps4_passcodestxt)
+- [Saved Passcode Support](https://github.com/HoppersPS4/Waste_Ur_Time/tree/main#ps4_passcodestxt--ps5_passcodestxt)
 
 09/23/2023 - 1.05 Released
 - Database now has 263 Titles!
@@ -61,5 +58,5 @@ if you would like to see more features, please make a feature request [here](htt
   - Inital Release
 
 # Known Issues
-GPU percentage seems to be bugged.
-maybe fixed in next update
+--GPU is disabled for now, it broke with the PS5 Update.<br>
+Will be fixed in Full Release.
