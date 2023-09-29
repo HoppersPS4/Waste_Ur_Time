@@ -25,8 +25,9 @@ if you would like to see more features, please make a feature request [here](htt
 # Updates
 
 09/29/2023 - 1.07b Released
-- alot of code cleaing for future release
+- alot of code cleaing for future source release
 - PS5 Support
+- A ton of checks to see if the Package file is actually a real Playstation Package.
 
 09/24/2023 - 1.06 Released
 - Removed 1.05 Build because i dont want to get sued.
