@@ -1,6 +1,6 @@
 ## Purpose
 
-Welcome 'Waste_Ur_Time,' a program that takes on the seemingly impossible task of bruteforcing PS4 and PS5 Package Passcodes, where success is as elusive as samsepi0l loving floppas.
+Welcome 'Waste_Ur_Time,' a program that takes on the seemingly impossible task of bruteforcing PS4 and PS5 Package Passcodes, where success is as elusive as Haytada loving piracy.
 
 # Preview
 
