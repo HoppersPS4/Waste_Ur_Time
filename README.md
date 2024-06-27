@@ -8,14 +8,12 @@ Welcome 'Waste_Ur_Time,' a program that takes on the seemingly impossible task o
 
 # Features
   - Able to Bruteforce (Added in v1.00) ✅
-  - Threads (Added in v1.01) ✅
-  - GPU / CPU (Added in v1.04) ✅
-
-# PS4_Passcodes.txt & PS5_Passcodes.txt
-- Obviously, i cant supply this file. Sony will sue or someone else will.
-- File is formatted like this: CONTENT-ID:PASSCODE
+  - Auto Detect (PS4/PS5)
 
 # Updates
+
+27/06/2024
+- Made a few changes, added an Auto Detect feature for PS4/PS5 packages.
 
 10/25/2023 - Source published
 
