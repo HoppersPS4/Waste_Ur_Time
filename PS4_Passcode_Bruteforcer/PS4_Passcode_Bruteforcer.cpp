@@ -9,6 +9,14 @@
 #include <Windows.h>
 #include <random>
 #include <mutex>
+#include <thread>
+#include <vector>
+#include <atomic>
+#include <future>
+#include <algorithm>
+#include <stdexcept>
+#include <memory>
+#include <system_error>
 
 std::atomic<bool> passcode_found(false);
 std::string found_passcode;
@@ -16,10 +24,10 @@ std::string last_used_passcode;
 std::string package_name;
 std::string package_cid;
 std::mutex output_mutex;
-bool debug_mode = false;
 bool silence_mode = false;
-
 volatile std::sig_atomic_t g_signal_received = false;
+std::chrono::steady_clock::time_point global_start_time;
+
 
 const std::string ascii_art = R"(
            __  ___  ___          __     ___          ___ 
@@ -27,16 +35,125 @@ const std::string ascii_art = R"(
 |/\| /~~\ .__/  |  |___    \__/ |  \     |  |  |  | |___ 
 )";
 
-std::string generate_random_passcode(int length = 32) {
-    if (debug_mode) {
-        return "00000000000000000000000000000000";
+struct ProcessResult
+{
+    std::string output = "";
+    int returnCode = -1;
+};
+
+
+ProcessResult ExecuteCommand(const std::string& command) {
+    ProcessResult result;
+
+    SECURITY_ATTRIBUTES saAttr = {};
+    saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
+    saAttr.bInheritHandle = TRUE;
+    saAttr.lpSecurityDescriptor = nullptr;
+
+    HANDLE g_hChildStd_OUT_Rd = nullptr, g_hChildStd_OUT_Wr = nullptr;
+    HANDLE g_hChildStd_ERR_Rd = nullptr, g_hChildStd_ERR_Wr = nullptr;
+
+    try {
+        if (!CreatePipe(&g_hChildStd_OUT_Rd, &g_hChildStd_OUT_Wr, &saAttr, 0))
+        {
+            throw std::runtime_error("Stdout pipe creation failed.");
+        }
+        if (!SetHandleInformation(g_hChildStd_OUT_Rd, HANDLE_FLAG_INHERIT, 0))
+        {
+            CloseHandle(g_hChildStd_OUT_Rd);
+            CloseHandle(g_hChildStd_OUT_Wr);
+            throw std::runtime_error("Stdout SetHandleInformation failed.");
+        }
+
+        if (!CreatePipe(&g_hChildStd_ERR_Rd, &g_hChildStd_ERR_Wr, &saAttr, 0))
+        {
+            CloseHandle(g_hChildStd_OUT_Rd);
+            CloseHandle(g_hChildStd_OUT_Wr);
+            throw std::runtime_error("Stderr pipe creation failed.");
+        }
+
+        if (!SetHandleInformation(g_hChildStd_ERR_Rd, HANDLE_FLAG_INHERIT, 0))
+        {
+            CloseHandle(g_hChildStd_OUT_Rd);
+            CloseHandle(g_hChildStd_OUT_Wr);
+            CloseHandle(g_hChildStd_ERR_Rd);
+
+            throw std::runtime_error("Stderr SetHandleInformation failed.");
+        }
+
+
+        STARTUPINFOA si = {};
+        si.cb = sizeof(STARTUPINFOA);
+        si.hStdError = g_hChildStd_ERR_Wr;
+        si.hStdOutput = g_hChildStd_OUT_Wr;
+        si.dwFlags |= STARTF_USESTDHANDLES;
+
+        PROCESS_INFORMATION pi = {};
+        std::vector<char> commandLine(command.begin(), command.end());
+        commandLine.push_back('\0');
+
+        if (!CreateProcessA(nullptr, commandLine.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi))
+        {
+            CloseHandle(g_hChildStd_OUT_Rd); CloseHandle(g_hChildStd_OUT_Wr);
+            CloseHandle(g_hChildStd_ERR_Rd); CloseHandle(g_hChildStd_ERR_Wr);
+            throw std::runtime_error("CreateProcessA failed with error code: " + std::to_string(GetLastError()));
+        }
+
+        CloseHandle(g_hChildStd_OUT_Wr);
+        CloseHandle(g_hChildStd_ERR_Wr);
+
+        DWORD dwRead;
+        const int bufferSize = 4096;
+        std::vector<char> buffer(bufferSize);
+        std::string output;
+
+        bool bSuccess = TRUE;
+        while (bSuccess) {
+            bSuccess = ReadFile(g_hChildStd_OUT_Rd, buffer.data(), bufferSize, &dwRead, nullptr);
+            if (!bSuccess || dwRead == 0)
+                break;
+            output.append(buffer.begin(), buffer.begin() + dwRead);
+        }
+
+        CloseHandle(g_hChildStd_OUT_Rd);
+
+        bSuccess = TRUE;
+        while (bSuccess) {
+            bSuccess = ReadFile(g_hChildStd_ERR_Rd, buffer.data(), bufferSize, &dwRead, nullptr);
+            if (!bSuccess || dwRead == 0)
+                break;
+            output.append(buffer.begin(), buffer.begin() + dwRead);
+        }
+        CloseHandle(g_hChildStd_ERR_Rd);
+
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        GetExitCodeProcess(pi.hProcess, (LPDWORD)&result.returnCode);
+
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+
+        result.output = output;
+
     }
+    catch (const std::exception& e)
+    {
+        if (g_hChildStd_OUT_Rd) { CloseHandle(g_hChildStd_OUT_Rd); }
+        if (g_hChildStd_OUT_Wr) { CloseHandle(g_hChildStd_OUT_Wr); }
+        if (g_hChildStd_ERR_Rd) { CloseHandle(g_hChildStd_ERR_Rd); }
+        if (g_hChildStd_ERR_Wr) { CloseHandle(g_hChildStd_ERR_Wr); }
+        throw;
+    }
+
+
+    return result;
+}
+
+
+
+std::string generate_random_passcode(std::mt19937& gen, int length = 32) {
 
     const std::string characters = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
     std::string passcode(length, ' ');
-
-    std::random_device rd;
-    std::mt19937 gen(rd());
     std::uniform_int_distribution<int> distribution(0, characters.size() - 1);
 
     for (int i = 0; i < length; ++i) {
@@ -88,20 +205,67 @@ bool CheckExecutable(const std::string& executableName) {
     return std::filesystem::exists(fullPath);
 }
 
-void brute_force_passcode(const std::string& input_file, const std::string& output_directory) {
+void brute_force_passcode_thread(const std::string& input_file, const std::string& output_directory,
+    const std::string& command_prefix, bool is_ps5, std::mt19937 gen) {
+
+    while (!passcode_found) {
+        std::string passcode = generate_random_passcode(gen);
+        last_used_passcode = passcode;
+        std::string Sc0Path = output_directory + "/Sc0";
+        std::string Image0Path = output_directory + "/Image0";
+        std::string full_command = command_prefix + passcode + " \"" + input_file + "\" \"" + output_directory + "\"";
+
+        ProcessResult result;
+        try {
+            result = ExecuteCommand(full_command);
+        }
+        catch (const std::exception& e) {
+            continue;
+        }
+
+        if (!silence_mode) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(now - global_start_time).count();
+            auto hours = elapsed_seconds / 3600;
+            auto minutes = (elapsed_seconds % 3600) / 60;
+            auto seconds = elapsed_seconds % 60;
+
+            std::lock_guard<std::mutex> lock(output_mutex);
+            std::cout << "[" << std::setw(2) << std::setfill('0') << hours << "h "
+                << std::setw(2) << std::setfill('0') << minutes << "m "
+                << std::setw(2) << std::setfill('0') << seconds << "s] | Passcode: " << passcode;
+            if (!is_ps5) {
+                std::cout << " | " << package_cid;
+            }
+            else {
+                std::string filename_without_extension = std::filesystem::path(input_file).stem().string();
+                std::cout << " | " << filename_without_extension;
+            }
+            std::cout << std::endl;
+        }
+
+        if (result.returnCode == 0 && std::filesystem::exists(Sc0Path) && std::filesystem::exists(Image0Path)) {
+            passcode_found = true;
+            found_passcode = passcode;
+            break;
+        }
+    }
+}
+
+void brute_force_passcode(const std::string& input_file, const std::string& output_directory, int num_threads) {
     ensure_output_directory(output_directory);
 
-    auto start_time = std::chrono::steady_clock::now();
+    global_start_time = std::chrono::steady_clock::now();
 
     const char ps4_header_magic[] = { 0x7F, 0x43, 0x4E, 0x54 };
     const char ps5_header_magic[] = { 0x7F, 0x46, 0x49, 0x48 };
     char header[4];
     std::ifstream file(input_file, std::ios::binary);
-
     if (!file.read(header, sizeof(header))) {
         std::cerr << "[-] Error reading from the file." << std::endl;
         return;
     }
+    file.close();
 
     std::string command;
     bool is_ps5 = false;
@@ -128,48 +292,23 @@ void brute_force_passcode(const std::string& input_file, const std::string& outp
         return;
     }
 
-    while (!passcode_found) {
-        std::string passcode = generate_random_passcode();
-        last_used_passcode = passcode;
-        std::string Sc0Path = output_directory + "/Sc0";
-        std::string Image0Path = output_directory + "/Image0";
+    std::random_device rd;
+    std::vector<std::thread> threads;
 
-        std::string full_command = command + passcode + " \"" + input_file + "\" \"" + output_directory + "\"";
+    if (num_threads == 0)
+        num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0)
+        num_threads = 4;
 
-        try {
-            int return_code;
-            return_code = std::system((full_command + " > nul 2>&1").c_str());
+    std::cout << "[+] Running with " << num_threads << " threads" << std::endl;
 
-            auto end_time = std::chrono::steady_clock::now();
-            auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
-            auto hours = elapsed_seconds / 3600;
-            auto minutes = (elapsed_seconds % 3600) / 60;
-            auto seconds = elapsed_seconds % 60;
+    for (int i = 0; i < num_threads; ++i) {
+        std::mt19937 gen(rd());
+        threads.emplace_back(brute_force_passcode_thread, input_file, output_directory, command, is_ps5, gen);
+    }
 
-            if (!silence_mode) {
-                std::lock_guard<std::mutex> lock(output_mutex);
-                std::cout << "[" << std::setw(2) << std::setfill('0') << hours << "h "
-                    << std::setw(2) << std::setfill('0') << minutes << "m "
-                    << std::setw(2) << std::setfill('0') << seconds << "s] | Passcode: " << passcode;
-                if (!is_ps5) {
-                    std::cout << " | " << package_cid;
-                }
-                else {
-                    std::string filename_without_extension = std::filesystem::path(input_file).stem().string();
-                    std::cout << " | " << filename_without_extension;
-                }
-                std::cout << std::endl;
-            }
-
-            if (return_code == 0 && std::filesystem::exists(Sc0Path) && std::filesystem::exists(Image0Path)) {
-                passcode_found = true;
-                found_passcode = passcode;
-                break;
-            }
-        }
-        catch (const std::exception& e) {
-            // no? we never hit this because we cat lovers here!
-        }
+    for (auto& thread : threads) {
+        thread.join();
     }
 }
 
@@ -182,26 +321,47 @@ void SignalHandler(int signal) {
     exit(signal);
 }
 
+
 int main(int argc, char* argv[]) {
     srand(static_cast<unsigned>(time(nullptr)));
 
-    if (argc < 3 || argc > 4) {
-        std::cerr << "\nUsage: " << argv[0] << " <package> <output> [--silence]\n"
+    int num_threads = 0;
+    if (argc < 3 || argc > 6) {
+        std::cerr << "\nUsage: " << argv[0] << " <package> <output> [--silence] [-t <threads>]\n"
             << "<package> - The package file to brute force.\n"
             << "<output> - Output directory.\n"
-            << "--silence - Activates 'Silence Mode' for minimal output.\n";
+            << "--silence - Activates 'Silence Mode' for minimal output.\n"
+            << "-t <threads> - Sets the number of threads (Default: hardware concurrency or 4 if none).\n";
         return 1;
     }
 
     std::system("cls");
-
     std::cout << ascii_art << std::endl;
 
-    if (argc == 4) {
-        if (std::string(argv[3]) == "--silence") {
+    for (int i = 3; i < argc; ++i) {
+        if (std::string(argv[i]) == "--silence") {
             silence_mode = true;
         }
+        else if (std::string(argv[i]) == "-t" && i + 1 < argc) {
+            try {
+                num_threads = std::stoi(argv[i + 1]);
+                if (num_threads < 0) {
+                    std::cerr << "[-] Invalid thread count: Must be a non-negative number." << std::endl;
+                    return 1;
+                }
+                i++;
+            }
+            catch (const std::invalid_argument& e) {
+                std::cerr << "[-] Invalid thread count: Not a valid number." << std::endl;
+                return 1;
+            }
+            catch (const std::out_of_range& e) {
+                std::cerr << "[-] Invalid thread count: Number too large." << std::endl;
+                return 1;
+            }
+        }
     }
+
 
     if (silence_mode) {
         std::cout << "[+] Silence Mode activated. This Window will be quiet..." << std::endl;
@@ -223,7 +383,7 @@ int main(int argc, char* argv[]) {
 
     std::signal(SIGINT, SignalHandler);
 
-    brute_force_passcode(package_name, output);
+    brute_force_passcode(package_name, output, num_threads);
 
     if (passcode_found) {
         std::string successFileName = package_name + ".success";
