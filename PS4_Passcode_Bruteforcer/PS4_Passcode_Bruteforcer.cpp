@@ -6,7 +6,13 @@
 #include <filesystem>
 #include <chrono>
 #include <csignal>
+#include <rocksdb/db.h>
+#if defined(_WIN32) || defined(_WIN64)
+// It's windows!
 #include <Windows.h>
+#else
+// The penguins are here
+#endif
 #include <random>
 #include <mutex>
 #include <thread>
@@ -27,7 +33,7 @@ std::mutex output_mutex;
 bool silence_mode = false;
 volatile std::sig_atomic_t g_signal_received = false;
 std::chrono::steady_clock::time_point global_start_time;
-
+rocksdb::DB *db;
 
 const std::string ascii_art = R"(
            __  ___  ___          __     ___          ___ 
@@ -45,6 +51,7 @@ struct ProcessResult
 ProcessResult ExecuteCommand(const std::string& command) {
     ProcessResult result;
 
+#if defined(_WIN32) || defined(_WIN64)
     SECURITY_ATTRIBUTES saAttr = {};
     saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
     saAttr.bInheritHandle = TRUE;
@@ -143,7 +150,18 @@ ProcessResult ExecuteCommand(const std::string& command) {
         if (g_hChildStd_ERR_Wr) { CloseHandle(g_hChildStd_ERR_Wr); }
         throw;
     }
-
+#else
+  // ! Listen, I know this is doing nothing. The windows executables aren't
+  // ! available for Linux anyway.
+  // ! I just make it somewhat run on Linux, so that I could hook the RocksDB
+  // ! thing to allow a friend of mine
+  // ! To use this while also being able to stop it and pick up from where it
+  // ! left off.
+  // ! Also cuz I thought it'd be funny to randomly drop in with
+  // ! ""linux support"". Don't expect this to work. at all
+  result.output = "";
+  result.returnCode = -1;
+#endif
 
     return result;
 }
@@ -197,12 +215,32 @@ std::string read_cid(const std::string& package_file) {
 }
 
 bool CheckExecutable(const std::string& executableName) {
+#if defined(_WIN32) || defined(_WIN64)
     std::string path = ".";
     std::string fullPath = path + "\\" + executableName;
 
     std::filesystem::path fullPathObj = std::filesystem::absolute(fullPath);
 
     return std::filesystem::exists(fullPath);
+#else
+  return true; // ! I know, I'm just stubbing... still windows only tool
+#endif
+}
+
+bool already_tried(const std::string &code, std::string *output) {
+  rocksdb::ReadOptions ro;
+  rocksdb::WriteOptions wo;
+
+  auto s = db->Get(ro, code, output);
+
+  // We’ve tried it
+  if (s.ok())
+    return true;
+
+  // Not tried yet, record and forget
+  db->Put(wo, code, "0");
+
+  return false;
 }
 
 void brute_force_passcode_thread(const std::string& input_file, const std::string& output_directory,
@@ -211,6 +249,24 @@ void brute_force_passcode_thread(const std::string& input_file, const std::strin
     while (!passcode_found) {
         std::string passcode = generate_random_passcode(gen);
         last_used_passcode = passcode;
+
+        std::string tested;
+        if (already_tried(passcode, &tested)) {
+          std::lock_guard<std::mutex> lock(output_mutex);
+          // We already attempted this passcode!
+          if (tested == "1") {
+            // Aaaand it is the right one... f
+            passcode_found = true;
+            found_passcode = passcode;
+            std::cout
+                << "Congratulations, we did all this work to repeat the right one: "
+                << passcode << std::endl;
+            break;
+          }
+
+          continue;
+        }
+
         std::string Sc0Path = output_directory + "/Sc0";
         std::string Image0Path = output_directory + "/Image0";
         std::string full_command = command_prefix + passcode + " \"" + input_file + "\" \"" + output_directory + "\"";
@@ -247,6 +303,8 @@ void brute_force_passcode_thread(const std::string& input_file, const std::strin
         if (result.returnCode == 0 && std::filesystem::exists(Sc0Path) && std::filesystem::exists(Image0Path)) {
             passcode_found = true;
             found_passcode = passcode;
+            // Save that we got it!
+            db->Put(rocksdb::WriteOptions(), passcode, "1");
             break;
         }
     }
@@ -318,28 +376,39 @@ void SignalHandler(int signal) {
         std::cout << "[+] Last used passcode: " << last_used_passcode << std::endl;
     }
     std::cout << "[+] Exiting..." << std::endl;
+    delete db;
     exit(signal);
 }
 
+void printHelp(char *argv[]) {
+  std::cerr << "\nUsage: " << argv[0]
+            << " <package> <output> [--silence] [-t <threads>]\n"
+            << "<package> - The package file to brute force.\n"
+            << "<output> - Output directory.\n"
+            << "--silence - Activates 'Silence Mode' for minimal output.\n"
+            << "-t <threads> - Sets the number of threads (Default: hardware "
+               "concurrency or 4 if none).\n";
+}
 
 int main(int argc, char* argv[]) {
     srand(static_cast<unsigned>(time(nullptr)));
 
     int num_threads = 0;
     if (argc < 3 || argc > 6) {
-        std::cerr << "\nUsage: " << argv[0] << " <package> <output> [--silence] [-t <threads>]\n"
-            << "<package> - The package file to brute force.\n"
-            << "<output> - Output directory.\n"
-            << "--silence - Activates 'Silence Mode' for minimal output.\n"
-            << "-t <threads> - Sets the number of threads (Default: hardware concurrency or 4 if none).\n";
+        printHelp(argv);
         return 1;
     }
 
-    std::system("cls");
+    #if defined(_WIN32) || defined(_WIN64)
+      std::system("cls");
+    #endif
     std::cout << ascii_art << std::endl;
 
     for (int i = 3; i < argc; ++i) {
-        if (std::string(argv[i]) == "--silence") {
+        if (std::string(argv[i]) == "--help") {
+          printHelp(argv);
+          return 1;
+        } else if (std::string(argv[i]) == "--silence") {
             silence_mode = true;
         }
         else if (std::string(argv[i]) == "-t" && i + 1 < argc) {
@@ -378,8 +447,22 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Initialize the RocksDB database
+    rocksdb::Options options;
+    options.create_if_missing = true;
+    options.IncreaseParallelism(); // use all CPU cores, it's gonna scream!
+    options.OptimizeLevelStyleCompaction(512 << 20); // 512 MiB target file size
+    auto status = rocksdb::DB::Open(options, "progress_db", &db);
+    if (!status.ok()) {
+      std::cerr << "[-] Somehow, failed to open the database, is it corrupted?"
+                << std::endl;
+      return 1;
+    }
+
+#if defined(_WIN32) || defined(_WIN64)
     std::string windowTitle = "Waste Ur Time is wasting ur time on " + package_name;
     SetConsoleTitleA(windowTitle.c_str());
+#endif
 
     std::signal(SIGINT, SignalHandler);
 
@@ -402,6 +485,9 @@ int main(int argc, char* argv[]) {
     else {
         std::cout << "[-] Passcode not found." << std::endl;
     }
+
+    // Close the DB
+    delete db;
 
     return 0;
 }
