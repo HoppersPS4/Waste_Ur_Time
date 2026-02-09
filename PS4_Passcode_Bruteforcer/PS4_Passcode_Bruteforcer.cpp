@@ -2,10 +2,10 @@
 #include <iomanip>
 #include <fstream>
 #include <sstream>
-#include <string>
 #include <filesystem>
 #include <chrono>
 #include <csignal>
+#include <string_view>
 #include <rocksdb/db.h>
 #if defined(_WIN32) || defined(_WIN64)
 // It's windows!
@@ -36,9 +36,12 @@ std::chrono::steady_clock::time_point global_start_time;
 rocksdb::DB *db;
 
 const std::string ascii_art = R"(
-           __  ___  ___          __     ___          ___ 
-|  |  /\  /__`  |  |__     |  | |__)     |  |  |\/| |__  
-|/\| /~~\ .__/  |  |___    \__/ |  \     |  |  |  | |___ 
+ __      __  _____    _______________________________     ____ _____________     ___________.___   _____  ___________
+/  \    /  \/  _  \  /   _____/\__    ___/\_   _____/    |    |   \______   \    \__    ___/|   | /     \ \_   _____/
+\   \/\/   /  /_\  \ \_____  \   |    |    |    __)_     |    |   /|       _/      |    |   |   |/  \ /  \ |    __)_ 
+ \        /    |    \/        \  |    |    |        \    |    |  / |    |   \      |    |   |   /    Y    \|        \
+  \__/\  /\____|__  /_______  /  |____|   /_______  /    |______/  |____|_  /      |____|   |___\____|__  /_______  /
+       \/         \/        \/                    \/                      \/                            \/        \/ 
 )";
 
 struct ProcessResult
@@ -168,17 +171,16 @@ ProcessResult ExecuteCommand(const std::string& command) {
 
 
 
-std::string generate_random_passcode(std::mt19937& gen, int length = 32) {
+void generate_random_passcode(std::mt19937& gen, std::string& passcode, int length = 32) {
 
-    const std::string characters = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
-    std::string passcode(length, ' ');
-    std::uniform_int_distribution<int> distribution(0, characters.size() - 1);
+    static constexpr char characters[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
+    static constexpr int char_count = sizeof(characters) - 1;
+    std::uniform_int_distribution<int> distribution(0, char_count - 1);
 
+    passcode.resize(length);
     for (int i = 0; i < length; ++i) {
         passcode[i] = characters[distribution(gen)];
     }
-
-    return passcode;
 }
 
 void ensure_output_directory(const std::string& output_directory) {
@@ -228,16 +230,14 @@ bool CheckExecutable(const std::string& executableName) {
 }
 
 bool already_tried(const std::string &code, std::string *output) {
-  rocksdb::ReadOptions ro;
-  rocksdb::WriteOptions wo;
+  static const rocksdb::ReadOptions ro;
+  static const rocksdb::WriteOptions wo;
 
   auto s = db->Get(ro, code, output);
 
-  // We’ve tried it
   if (s.ok())
     return true;
 
-  // Not tried yet, record and forget
   db->Put(wo, code, "0");
 
   return false;
@@ -246,30 +246,54 @@ bool already_tried(const std::string &code, std::string *output) {
 void brute_force_passcode_thread(const std::string& input_file, const std::string& output_directory,
     const std::string& command_prefix, bool is_ps5, std::mt19937 gen) {
 
-    while (!passcode_found) {
-        std::string passcode = generate_random_passcode(gen);
-        last_used_passcode = passcode;
+    const std::string Sc0Path = output_directory + "/Sc0";
+    const std::string Image0Path = output_directory + "/Image0";
+    const std::string input_quoted = "\"" + input_file + "\"";
+    const std::string output_quoted = "\"" + output_directory + "\"";
 
-        std::string tested;
-        if (already_tried(passcode, &tested)) {
-          std::lock_guard<std::mutex> lock(output_mutex);
-          // We already attempted this passcode!
-          if (tested == "1") {
-            // Aaaand it is the right one... f
-            passcode_found = true;
-            found_passcode = passcode;
-            std::cout
-                << "Congratulations, we did all this work to repeat the right one: "
-                << passcode << std::endl;
-            break;
-          }
+    std::string display_label;
+    if (!is_ps5) {
+        display_label = package_cid;
+    } else {
+        display_label = std::filesystem::path(input_file).stem().string();
+    }
 
-          continue;
+    std::string passcode;
+    passcode.reserve(32);
+    std::string full_command;
+    full_command.reserve(command_prefix.size() + 32 + input_quoted.size() + output_quoted.size() + 4);
+    std::string tested;
+    uint64_t attempt_count = 0;
+
+    while (!passcode_found.load(std::memory_order_relaxed)) {
+        generate_random_passcode(gen, passcode);
+        ++attempt_count;
+
+		// Collisions are statistically impossible, do NOT hammer the DB with every single attempt, it will just slow us down. Check every 500 attempts instead
+        if ((attempt_count % 500) == 0) {
+            tested.clear();
+            if (already_tried(passcode, &tested)) {
+              if (tested == "1") {
+                std::lock_guard<std::mutex> lock(output_mutex);
+                passcode_found.store(true, std::memory_order_release);
+                found_passcode = passcode;
+                last_used_passcode = passcode;
+                std::cout
+                    << "Congratulations, we did all this work to repeat the right one: "
+                    << passcode << std::endl;
+                break;
+              }
+              continue;
+            }
         }
 
-        std::string Sc0Path = output_directory + "/Sc0";
-        std::string Image0Path = output_directory + "/Image0";
-        std::string full_command = command_prefix + passcode + " \"" + input_file + "\" \"" + output_directory + "\"";
+        full_command.clear();
+        full_command.append(command_prefix);
+        full_command.append(passcode);
+        full_command.push_back(' ');
+        full_command.append(input_quoted);
+        full_command.push_back(' ');
+        full_command.append(output_quoted);
 
         ProcessResult result;
         try {
@@ -279,7 +303,8 @@ void brute_force_passcode_thread(const std::string& input_file, const std::strin
             continue;
         }
 
-        if (!silence_mode) {
+        // spamming console is not a good idea as well
+        if (!silence_mode && (attempt_count % 50) == 0) {
             auto now = std::chrono::steady_clock::now();
             auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(now - global_start_time).count();
             auto hours = elapsed_seconds / 3600;
@@ -289,24 +314,22 @@ void brute_force_passcode_thread(const std::string& input_file, const std::strin
             std::lock_guard<std::mutex> lock(output_mutex);
             std::cout << "[" << std::setw(2) << std::setfill('0') << hours << "h "
                 << std::setw(2) << std::setfill('0') << minutes << "m "
-                << std::setw(2) << std::setfill('0') << seconds << "s] | Passcode: " << passcode;
-            if (!is_ps5) {
-                std::cout << " | " << package_cid;
-            }
-            else {
-                std::string filename_without_extension = std::filesystem::path(input_file).stem().string();
-                std::cout << " | " << filename_without_extension;
-            }
-            std::cout << std::endl;
+                << std::setw(2) << std::setfill('0') << seconds << "s] | Passcode: " << passcode
+                << " | " << display_label << std::endl;
         }
 
         if (result.returnCode == 0 && std::filesystem::exists(Sc0Path) && std::filesystem::exists(Image0Path)) {
-            passcode_found = true;
+            passcode_found.store(true, std::memory_order_release);
             found_passcode = passcode;
-            // Save that we got it!
             db->Put(rocksdb::WriteOptions(), passcode, "1");
             break;
         }
+    }
+
+    // store last passcode safely
+    {
+        std::lock_guard<std::mutex> lock(output_mutex);
+        last_used_passcode = passcode;
     }
 }
 
@@ -447,11 +470,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Initialize the RocksDB database
     rocksdb::Options options;
     options.create_if_missing = true;
-    options.IncreaseParallelism(); // use all CPU cores, it's gonna scream!
+    options.IncreaseParallelism();
     options.OptimizeLevelStyleCompaction(512 << 20); // 512 MiB target file size
+    options.write_buffer_size = 128 << 20;           // 128 MiB memtable
+    options.max_write_buffer_number = 4;
+    options.min_write_buffer_number_to_merge = 2;
     auto status = rocksdb::DB::Open(options, "progress_db", &db);
     if (!status.ok()) {
       std::cerr << "[-] Somehow, failed to open the database, is it corrupted?"
@@ -486,7 +511,6 @@ int main(int argc, char* argv[]) {
         std::cout << "[-] Passcode not found." << std::endl;
     }
 
-    // Close the DB
     delete db;
 
     return 0;

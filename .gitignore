@@ -1,1 +1,6 @@
 /build
+.vs
+/x64
+/x86
+PS4_Passcode_Bruteforcer/x64
+PS4_Passcode_Bruteforcer/x86
