@@ -12,6 +12,10 @@ Welcome 'Waste_Ur_Time,' a program that takes on the seemingly impossible task o
 
 # Updates
 
+GPU Support added by ![@Pcniado](https://github.com/Pcniado)
+09/02/2026
+![GPU Version](https://github.com/Pcniado/ps4-bruteforcer-speedy/)
+
 27/06/2024
 - Made a few changes, added an Auto Detect feature for PS4/PS5 packages.
 
