@@ -146,7 +146,7 @@
     </Link>
     <CudaCompile>
       <AdditionalOptions>-allow-unsupported-compiler %(AdditionalOptions)</AdditionalOptions>
-      <CodeGeneration>compute_75,sm_75;compute_100,sm_100</CodeGeneration>
+      <CodeGeneration>compute_75,sm_75;compute_86,sm_86;compute_89,sm_89;compute_100,sm_100</CodeGeneration>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
