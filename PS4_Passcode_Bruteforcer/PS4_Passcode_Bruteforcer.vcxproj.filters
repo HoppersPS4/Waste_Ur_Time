@@ -19,4 +19,12 @@
       <Filter>Quelldateien</Filter>
     </ClCompile>
   </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="gpu_bruteforce.cu" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="gpu_bruteforce.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
+  </ItemGroup>
 </Project>

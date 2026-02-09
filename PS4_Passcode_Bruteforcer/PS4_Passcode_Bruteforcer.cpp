@@ -7,6 +7,7 @@
 #include <csignal>
 #include <string_view>
 #include <rocksdb/db.h>
+#include "gpu_bruteforce.h"
 #if defined(_WIN32) || defined(_WIN64)
 // It's windows!
 #include <Windows.h>
@@ -31,9 +32,10 @@ std::string package_name;
 std::string package_cid;
 std::mutex output_mutex;
 bool silence_mode = false;
+bool use_gpu = false;
 volatile std::sig_atomic_t g_signal_received = false;
 std::chrono::steady_clock::time_point global_start_time;
-rocksdb::DB *db;
+rocksdb::DB *db = nullptr;
 
 const std::string ascii_art = R"(
  __      __  _____    _______________________________     ____ _____________     ___________.___   _____  ___________
@@ -185,6 +187,78 @@ void generate_random_passcode(std::mt19937& gen, std::string& passcode, int leng
 
 void ensure_output_directory(const std::string& output_directory) {
     std::filesystem::create_directories(output_directory);
+}
+
+// ---------------------------------------------------------------------------
+// Native PKG parsing – extract content_id and Keys[0].digest for GPU mode
+// ---------------------------------------------------------------------------
+
+static uint32_t read_be32(const uint8_t* p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8)  | (uint32_t)p[3];
+}
+
+bool parse_pkg_crypto_data(const std::string& pkg_path, PkgCryptoData& out) {
+    std::ifstream file(pkg_path, std::ios::binary);
+    if (!file) return false;
+
+    // Verify PS4 magic \x7FCNT
+    char magic[4];
+    file.read(magic, 4);
+    if (!file || std::memcmp(magic, "\x7F\x43\x4E\x54", 4) != 0) return false;
+
+    uint8_t buf[4];
+
+    // entry_count @ 0x10 (big-endian uint32)
+    file.seekg(0x10);
+    file.read(reinterpret_cast<char*>(buf), 4);
+    if (!file) return false;
+    uint32_t entry_count = read_be32(buf);
+
+    // entry_table_offset @ 0x18 (big-endian uint32)
+    file.seekg(0x18);
+    file.read(reinterpret_cast<char*>(buf), 4);
+    if (!file) return false;
+    uint32_t entry_table_offset = read_be32(buf);
+
+    // content_id @ 0x40 (36 ASCII bytes)
+    file.seekg(0x40);
+    file.read(out.content_id, 36);
+    if (!file) return false;
+    out.content_id[36] = '\0';
+
+    // Scan the entry table for ENTRY_KEYS (id = 0x0010)
+    file.seekg(entry_table_offset);
+    uint32_t keys_data_offset = 0;
+    bool found = false;
+
+    for (uint32_t i = 0; i < entry_count && !found; i++) {
+        uint8_t entry[32];
+        file.read(reinterpret_cast<char*>(entry), 32);
+        if (!file) return false;
+
+        uint32_t id          = read_be32(entry);
+        uint32_t data_offset = read_be32(entry + 16);
+
+        if (id == 0x0010) { // EntryId.ENTRY_KEYS
+            keys_data_offset = data_offset;
+            found = true;
+        }
+    }
+
+    if (!found) {
+        std::cerr << "[-] ENTRY_KEYS not found in PKG entry table." << std::endl;
+        return false;
+    }
+
+    // ENTRY_KEYS layout: seedDigest(32) + Keys[0].digest(32) + ...
+    // We want Keys[0].digest at data_offset + 32
+    file.seekg(keys_data_offset + 32);
+    file.read(reinterpret_cast<char*>(out.expected_digest), 32);
+    if (!file) return false;
+
+    out.valid = true;
+    return true;
 }
 
 bool is_pkg_file(const std::string& file_name) {
@@ -393,22 +467,89 @@ void brute_force_passcode(const std::string& input_file, const std::string& outp
     }
 }
 
+// ---------------------------------------------------------------------------
+// GPU-accelerated bruteforce (PS4 only)
+// ---------------------------------------------------------------------------
+
+void brute_force_passcode_gpu(const std::string& input_file, const std::string& output_directory) {
+    ensure_output_directory(output_directory);
+    global_start_time = std::chrono::steady_clock::now();
+
+    // Must be a PS4 PKG
+    const char ps4_magic[] = { 0x7F, 0x43, 0x4E, 0x54 };
+    char header[4];
+    {
+        std::ifstream file(input_file, std::ios::binary);
+        if (!file.read(header, 4)) {
+            std::cerr << "[-] Error reading the file." << std::endl;
+            return;
+        }
+    }
+    if (std::memcmp(header, ps4_magic, 4) != 0) {
+        std::cerr << "[-] GPU mode only supports PS4 PKG files." << std::endl;
+        return;
+    }
+
+    std::cout << "[+] Detected PS4 package file." << std::endl;
+    std::cout << "[+] GPU: " << gpu_device_name() << std::endl;
+
+    PkgCryptoData crypto{};
+    if (!parse_pkg_crypto_data(input_file, crypto)) {
+        std::cerr << "[-] Failed to parse PKG crypto data." << std::endl;
+        return;
+    }
+
+    package_cid = std::string(crypto.content_id);
+    std::cout << "[+] Content ID: " << package_cid << std::endl;
+
+    // Print expected digest for debug
+    std::cout << "[+] Keys[0].digest: ";
+    for (int i = 0; i < 32; i++)
+        std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)crypto.expected_digest[i];
+    std::cout << std::dec << std::endl;
+
+    std::string result = gpu_brute_force(crypto, passcode_found, silence_mode);
+
+    if (!result.empty()) {
+        found_passcode = result;
+
+        // Verify + extract using the official tool if available
+        if (CheckExecutable("orbis-pub-cmd.exe")) {
+            std::cout << "[+] Verifying passcode and extracting PKG..." << std::endl;
+            std::string cmd = "orbis-pub-cmd.exe img_extract --passcode " + result
+                            + " \"" + input_file + "\" \"" + output_directory + "\"";
+            ProcessResult pr = ExecuteCommand(cmd);
+            if (pr.returnCode == 0) {
+                std::cout << "[+] PKG extracted successfully!" << std::endl;
+            } else {
+                std::cout << "[!] Extraction tool returned code " << pr.returnCode
+                          << ". You may need to extract manually with the found passcode."
+                          << std::endl;
+            }
+        } else {
+            std::cout << "[!] orbis-pub-cmd.exe not found. Run extraction manually with passcode: "
+                      << result << std::endl;
+        }
+    }
+}
+
 void SignalHandler(int signal) {
     g_signal_received = true;
     if (!last_used_passcode.empty()) {
         std::cout << "[+] Last used passcode: " << last_used_passcode << std::endl;
     }
     std::cout << "[+] Exiting..." << std::endl;
-    delete db;
+    if (db) delete db;
     exit(signal);
 }
 
 void printHelp(char *argv[]) {
   std::cerr << "\nUsage: " << argv[0]
-            << " <package> <output> [--silence] [-t <threads>]\n"
+            << " <package> <output> [--silence] [--gpu] [-t <threads>]\n"
             << "<package> - The package file to brute force.\n"
             << "<output> - Output directory.\n"
             << "--silence - Activates 'Silence Mode' for minimal output.\n"
+            << "--gpu     - Use GPU acceleration (CUDA, PS4 PKGs only).\n"
             << "-t <threads> - Sets the number of threads (Default: hardware "
                "concurrency or 4 if none).\n";
 }
@@ -417,7 +558,7 @@ int main(int argc, char* argv[]) {
     srand(static_cast<unsigned>(time(nullptr)));
 
     int num_threads = 0;
-    if (argc < 3 || argc > 6) {
+    if (argc < 3 || argc > 7) {
         printHelp(argv);
         return 1;
     }
@@ -433,6 +574,8 @@ int main(int argc, char* argv[]) {
           return 1;
         } else if (std::string(argv[i]) == "--silence") {
             silence_mode = true;
+        } else if (std::string(argv[i]) == "--gpu") {
+            use_gpu = true;
         }
         else if (std::string(argv[i]) == "-t" && i + 1 < argc) {
             try {
@@ -469,19 +612,29 @@ int main(int argc, char* argv[]) {
         std::cerr << "[-] Invalid package file format." << std::endl;
         return 1;
     }
+    // GPU mode check
+    if (use_gpu) {
+        if (!gpu_available()) {
+            std::cerr << "[-] No CUDA GPU detected. Falling back to CPU mode." << std::endl;
+            use_gpu = false;
+        }
+    }
 
-    rocksdb::Options options;
-    options.create_if_missing = true;
-    options.IncreaseParallelism();
-    options.OptimizeLevelStyleCompaction(512 << 20); // 512 MiB target file size
-    options.write_buffer_size = 128 << 20;           // 128 MiB memtable
-    options.max_write_buffer_number = 4;
-    options.min_write_buffer_number_to_merge = 2;
-    auto status = rocksdb::DB::Open(options, "progress_db", &db);
-    if (!status.ok()) {
-      std::cerr << "[-] Somehow, failed to open the database, is it corrupted?"
-                << std::endl;
-      return 1;
+    // Only open RocksDB for CPU mode (GPU mode doesn't need it)
+    if (!use_gpu) {
+        rocksdb::Options options;
+        options.create_if_missing = true;
+        options.IncreaseParallelism();
+        options.OptimizeLevelStyleCompaction(512 << 20);
+        options.write_buffer_size = 128 << 20;
+        options.max_write_buffer_number = 4;
+        options.min_write_buffer_number_to_merge = 2;
+        auto status = rocksdb::DB::Open(options, "progress_db", &db);
+        if (!status.ok()) {
+            std::cerr << "[-] Somehow, failed to open the database, is it corrupted?"
+                      << std::endl;
+            return 1;
+        }
     }
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -491,7 +644,11 @@ int main(int argc, char* argv[]) {
 
     std::signal(SIGINT, SignalHandler);
 
-    brute_force_passcode(package_name, output, num_threads);
+    if (use_gpu) {
+        brute_force_passcode_gpu(package_name, output);
+    } else {
+        brute_force_passcode(package_name, output, num_threads);
+    }
 
     if (passcode_found) {
         std::string successFileName = package_name + ".success";
@@ -511,7 +668,7 @@ int main(int argc, char* argv[]) {
         std::cout << "[-] Passcode not found." << std::endl;
     }
 
-    delete db;
+    if (db) delete db;
 
     return 0;
 }
