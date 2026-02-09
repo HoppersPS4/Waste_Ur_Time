@@ -1,5 +1,18 @@
 cmake_minimum_required(VERSION 4.0)
 project(waster_ur_time)
+
+# Check for CUDA support (GPU-accelerated bruteforce)
+include(CheckLanguage)
+check_language(CUDA)
+if(CMAKE_CUDA_COMPILER)
+    enable_language(CUDA)
+    message(STATUS "CUDA found - GPU bruteforce enabled")
+    set(CUDA_AVAILABLE TRUE)
+else()
+    message(STATUS "CUDA not found - GPU bruteforce disabled (CPU-only)")
+    set(CUDA_AVAILABLE FALSE)
+endif()
+
 add_executable(${PROJECT_NAME})
 
 # Set the C++ standard to use
@@ -32,6 +45,17 @@ endif()
 # Add source codes
 file(GLOB_RECURSE PROJECT_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/PS4_Passcode_Bruteforcer/*.cpp")
 set(PROJECT_INCLUDE "${CMAKE_CURRENT_LIST_DIR}/PS4_Passcode_Bruteforcer/")
+
+# CUDA GPU support
+if(CUDA_AVAILABLE)
+    file(GLOB_RECURSE CUDA_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/PS4_Passcode_Bruteforcer/*.cu")
+    target_sources(${PROJECT_NAME} PRIVATE ${CUDA_SOURCES})
+    target_compile_definitions(${PROJECT_NAME} PRIVATE USE_CUDA)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_ARCHITECTURES "50;52;60;61;70;75;80;86;89;90"
+    )
+endif()
 
 # Declare the final executable
 target_sources(${PROJECT_NAME} PRIVATE ${PROJECT_SOURCES})
