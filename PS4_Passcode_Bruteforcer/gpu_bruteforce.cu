@@ -8,17 +8,11 @@
 #include <iostream>
 #include <iomanip>
 #include <random>
+#include <thread>
+#include <mutex>
+#include <vector>
 
-// cuda error checking macro
-
-#define CUDA_CHECK(call) do {                                           \
-    cudaError_t _err = (call);                                          \
-    if (_err != cudaSuccess) {                                          \
-        std::cerr << "[-] CUDA error: " << cudaGetErrorString(_err)     \
-                  << " (" << __FILE__ << ":" << __LINE__ << ")\n";      \
-        return "";                                                      \
-    }                                                                   \
-} while (0)
+// Note: error checking is done via GPU_CHECK in gpu_worker()
 
 //sha256 constants (host and device)
 
@@ -330,10 +324,108 @@ bool gpu_available() {
     return (err == cudaSuccess && count > 0);
 }
 
-std::string gpu_device_name() {
+int gpu_device_count() {
+    int count = 0;
+    cudaError_t err = cudaGetDeviceCount(&count);
+    return (err == cudaSuccess) ? count : 0;
+}
+
+std::string gpu_device_name(int device_id) {
     cudaDeviceProp prop;
-    if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) return "Unknown";
+    if (cudaGetDeviceProperties(&prop, device_id) != cudaSuccess) return "Unknown";
     return std::string(prop.name);
+}
+
+// Per-GPU worker: runs the bruteforce loop on a single device
+static void gpu_worker(
+    int device_id,
+    const uint32_t* midstate,
+    const uint32_t* expected,
+    std::atomic<bool>& passcode_found,
+    bool silence_mode,
+    int batch_size_log2,
+    std::string& out_result,
+    std::mutex& output_mutex,
+    std::atomic<uint64_t>& global_attempts)
+{
+    cudaError_t err = cudaSetDevice(device_id);
+    if (err != cudaSuccess) {
+        std::lock_guard<std::mutex> lock(output_mutex);
+        std::cerr << "[-] GPU " << device_id << ": cudaSetDevice failed: "
+                  << cudaGetErrorString(err) << std::endl;
+        return;
+    }
+
+    const int batch_size        = 1 << batch_size_log2;
+    const int threads_per_block = 256;
+    const int num_blocks        = batch_size / threads_per_block;
+
+    uint32_t *d_midstate = nullptr, *d_expected = nullptr;
+    int      *d_found_flag = nullptr;
+    uint8_t  *d_found_passcode = nullptr;
+
+    auto check = [&](cudaError_t e, const char* file, int line) -> bool {
+        if (e != cudaSuccess) {
+            std::lock_guard<std::mutex> lock(output_mutex);
+            std::cerr << "[-] GPU " << device_id << " CUDA error: "
+                      << cudaGetErrorString(e) << " (" << file << ":" << line << ")" << std::endl;
+            return false;
+        }
+        return true;
+    };
+    #define GPU_CHECK(call) if (!check((call), __FILE__, __LINE__)) goto cleanup
+
+    GPU_CHECK(cudaMalloc(&d_midstate,        8 * sizeof(uint32_t)));
+    GPU_CHECK(cudaMalloc(&d_expected,        8 * sizeof(uint32_t)));
+    GPU_CHECK(cudaMalloc(&d_found_flag,      sizeof(int)));
+    GPU_CHECK(cudaMalloc(&d_found_passcode,  32));
+
+    GPU_CHECK(cudaMemcpy(d_midstate, midstate, 8 * sizeof(uint32_t), cudaMemcpyHostToDevice));
+    GPU_CHECK(cudaMemcpy(d_expected, expected, 8 * sizeof(uint32_t), cudaMemcpyHostToDevice));
+    {
+        int zero = 0;
+        GPU_CHECK(cudaMemcpy(d_found_flag, &zero, sizeof(int), cudaMemcpyHostToDevice));
+    }
+
+    {
+        std::random_device rd;
+        std::mt19937_64 host_rng(rd() ^ ((uint64_t)device_id << 32));
+
+        uint64_t batch_num = 0;
+
+        while (!passcode_found.load(std::memory_order_relaxed)) {
+            uint64_t base_seed = host_rng();
+
+            check_passcodes_kernel<<<num_blocks, threads_per_block>>>(
+                d_midstate, d_expected, base_seed, d_found_flag, d_found_passcode);
+
+            GPU_CHECK(cudaDeviceSynchronize());
+
+            global_attempts.fetch_add((uint64_t)batch_size, std::memory_order_relaxed);
+            batch_num++;
+
+            int h_found = 0;
+            GPU_CHECK(cudaMemcpy(&h_found, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost));
+
+            if (h_found) {
+                uint8_t h_passcode[32];
+                GPU_CHECK(cudaMemcpy(h_passcode, d_found_passcode, 32, cudaMemcpyDeviceToHost));
+                {
+                    std::lock_guard<std::mutex> lock(output_mutex);
+                    out_result = std::string(reinterpret_cast<char*>(h_passcode), 32);
+                }
+                passcode_found.store(true, std::memory_order_release);
+                break;
+            }
+        }
+    }
+
+cleanup:
+    if (d_midstate)       cudaFree(d_midstate);
+    if (d_expected)       cudaFree(d_expected);
+    if (d_found_flag)     cudaFree(d_found_flag);
+    if (d_found_passcode) cudaFree(d_found_passcode);
+    #undef GPU_CHECK
 }
 
 std::string gpu_brute_force(
@@ -342,14 +434,10 @@ std::string gpu_brute_force(
     bool silence_mode,
     int batch_size_log2)
 {
-    cudaSetDevice(0);
+    int device_count = gpu_device_count();
+    if (device_count <= 0) return "";
 
-    const int batch_size       = 1 << batch_size_log2;
-    const int threads_per_block = 256;
-    const int num_blocks        = batch_size / threads_per_block;
-
-
-
+    // Precompute midstate and expected digest on the host (shared by all GPUs)
     uint8_t index_bytes[4] = {0, 0, 0, 0};
     uint8_t sha_index[32];
     sha256_host(index_bytes, 4, sha_index);
@@ -389,73 +477,46 @@ std::string gpu_brute_force(
                     | ((uint32_t)data.expected_digest[i*4 + 3]);
     }
 
-    uint32_t *d_midstate = nullptr, *d_expected = nullptr;
-    int      *d_found_flag = nullptr;
-    uint8_t  *d_found_passcode = nullptr;
-
-    CUDA_CHECK(cudaMalloc(&d_midstate,        8 * sizeof(uint32_t)));
-    CUDA_CHECK(cudaMalloc(&d_expected,        8 * sizeof(uint32_t)));
-    CUDA_CHECK(cudaMalloc(&d_found_flag,      sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_found_passcode,  32));
-
-    CUDA_CHECK(cudaMemcpy(d_midstate, midstate, 8 * sizeof(uint32_t), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_expected, expected, 8 * sizeof(uint32_t), cudaMemcpyHostToDevice));
-
-    int zero = 0;
-    CUDA_CHECK(cudaMemcpy(d_found_flag, &zero, sizeof(int), cudaMemcpyHostToDevice));
-
-    std::random_device rd;
-    std::mt19937_64 host_rng(rd());
-
-    auto start_time = std::chrono::steady_clock::now();
-    uint64_t total_attempts = 0;
-    uint64_t batch_num = 0;
+    // Shared state
+    std::mutex output_mutex;
+    std::atomic<uint64_t> global_attempts{0};
     std::string result;
 
+    // Launch one thread per GPU
+    std::vector<std::thread> workers;
+    workers.reserve(device_count);
+    for (int dev = 0; dev < device_count; dev++) {
+        workers.emplace_back(
+            gpu_worker, dev, midstate, expected,
+            std::ref(passcode_found), silence_mode, batch_size_log2,
+            std::ref(result), std::ref(output_mutex), std::ref(global_attempts));
+    }
+
+    // Status reporting from the main thread
+    auto start_time = std::chrono::steady_clock::now();
     while (!passcode_found.load(std::memory_order_relaxed)) {
-        uint64_t base_seed = host_rng();
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        if (passcode_found.load(std::memory_order_relaxed)) break;
 
-        check_passcodes_kernel<<<num_blocks, threads_per_block>>>(
-            d_midstate, d_expected, base_seed, d_found_flag, d_found_passcode);
-
-        CUDA_CHECK(cudaDeviceSynchronize());
-
-        total_attempts += (uint64_t)batch_size;
-        batch_num++;
-
-        int h_found = 0;
-        CUDA_CHECK(cudaMemcpy(&h_found, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost));
-
-        if (h_found) {
-            uint8_t h_passcode[32];
-            CUDA_CHECK(cudaMemcpy(h_passcode, d_found_passcode, 32, cudaMemcpyDeviceToHost));
-            result = std::string(reinterpret_cast<char*>(h_passcode), 32);
-            passcode_found.store(true, std::memory_order_release);
-            break;
-        }
-
-        if (!silence_mode && (batch_num % 10) == 0) {
+        if (!silence_mode) {
+            uint64_t total = global_attempts.load(std::memory_order_relaxed);
             auto now     = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
-            double rate  = (elapsed > 0) ? (double)total_attempts / (double)elapsed : 0.0;
+            double rate  = (elapsed > 0) ? (double)total / (double)elapsed : 0.0;
 
             auto hours   = elapsed / 3600;
             auto minutes = (elapsed % 3600) / 60;
             auto seconds = elapsed % 60;
 
-            std::cout << "[GPU] ["
+            std::cout << "[GPU x" << device_count << "] ["
                       << std::setw(2) << std::setfill('0') << hours   << "h "
                       << std::setw(2) << std::setfill('0') << minutes << "m "
                       << std::setw(2) << std::setfill('0') << seconds << "s] | "
                       << std::fixed << std::setprecision(2) << (rate / 1e6) << " M/s | "
-                      << total_attempts << " total attempts" << std::endl;
+                      << total << " total attempts" << std::endl;
         }
     }
 
-    cudaFree(d_midstate);
-    cudaFree(d_expected);
-    cudaFree(d_found_flag);
-    cudaFree(d_found_passcode);
-
+    for (auto& t : workers) t.join();
     return result;
 }

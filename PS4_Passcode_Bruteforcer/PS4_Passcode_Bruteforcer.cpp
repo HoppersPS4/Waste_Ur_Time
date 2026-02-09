@@ -251,8 +251,8 @@ bool parse_pkg_crypto_data(const std::string& pkg_path, PkgCryptoData& out) {
         return false;
     }
 
-    // ENTRY_KEYS layout: seedDigest(32) + Keys[0].digest(32) + ...
-    // We want Keys[0].digest at data_offset + 32
+    // ENTRY_KEYS layout: seedDigest(32) + Keys[0].digest(32) + Keys[1].digest(32) + ...
+    // Keys[0].digest = SHA256(dk0) XOR dk0, where dk0 = ComputeKeys(content_id, passcode, 0)
     file.seekg(keys_data_offset + 32);
     file.read(reinterpret_cast<char*>(out.expected_digest), 32);
     if (!file) return false;
@@ -491,7 +491,10 @@ void brute_force_passcode_gpu(const std::string& input_file, const std::string& 
     }
 
     std::cout << "[+] Detected PS4 package file." << std::endl;
-    std::cout << "[+] GPU: " << gpu_device_name() << std::endl;
+    int ngpus = gpu_device_count();
+    std::cout << "[+] CUDA GPUs detected: " << ngpus << std::endl;
+    for (int i = 0; i < ngpus; i++)
+        std::cout << "[+]   GPU " << i << ": " << gpu_device_name(i) << std::endl;
 
     PkgCryptoData crypto{};
     if (!parse_pkg_crypto_data(input_file, crypto)) {
@@ -602,7 +605,7 @@ int main(int argc, char* argv[]) {
         std::cout << "[+] Silence Mode activated. This Window will be quiet..." << std::endl;
     }
     else {
-        std::cout << "Made by hoppers - v1.08" << std::endl;
+        std::cout << "Made by hoppers, GPU support added by Pcniado" << std::endl;
     }
 
     package_name = argv[1];
