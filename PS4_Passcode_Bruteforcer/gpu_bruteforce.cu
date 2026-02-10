@@ -12,7 +12,13 @@
 #include <mutex>
 #include <vector>
 
-// Note: error checking is done via GPU_CHECK in gpu_worker()
+
+#define HASHES_PER_THREAD 4 // 4 for now but could be made more
+
+static constexpr float AUTOTUNE_TARGET_MS_LOW  = 30.0f; 
+static constexpr float AUTOTUNE_TARGET_MS_HIGH = 100.0f; 
+static constexpr int   AUTOTUNE_MIN_LOG2       = 18;     // 256K threads minimum
+static constexpr int   AUTOTUNE_MAX_LOG2        = 28;    // 256M threads maximum
 
 //sha256 constants (host and device)
 
@@ -76,13 +82,28 @@ __device__ __forceinline__ uint32_t d_rotr(uint32_t x, int n) {
     return (x >> n) | (x << (32 - n));
 }
 
+// LOP3 instructions: combine 3 logical ops into 1 GPU cycle via PTX
+// Ch truth table:  (x & y) ^ (~x & z) = 0xCA
+// Maj truth table: (x & y) ^ (x & z) ^ (y & z) = 0xE8
+#ifdef __CUDACC__                       // nvcc – use real PTX
+__device__ __forceinline__ uint32_t d_ch(uint32_t x, uint32_t y, uint32_t z) {
+    uint32_t result;
+    asm("lop3.b32 %0, %1, %2, %3, 0xCA;" : "=r"(result) : "r"(x), "r"(y), "r"(z));
+    return result;
+}
+__device__ __forceinline__ uint32_t d_maj(uint32_t x, uint32_t y, uint32_t z) {
+    uint32_t result;
+    asm("lop3.b32 %0, %1, %2, %3, 0xE8;" : "=r"(result) : "r"(x), "r"(y), "r"(z));
+    return result;
+}
+#else                                   // IntelliSense / plain C++ fallback
 __device__ __forceinline__ uint32_t d_ch(uint32_t x, uint32_t y, uint32_t z) {
     return (x & y) ^ (~x & z);
 }
-
 __device__ __forceinline__ uint32_t d_maj(uint32_t x, uint32_t y, uint32_t z) {
     return (x & y) ^ (x & z) ^ (y & z);
 }
+#endif
 
 __device__ __forceinline__ uint32_t d_Sigma0(uint32_t x) {
     return d_rotr(x, 2) ^ d_rotr(x, 13) ^ d_rotr(x, 22);
@@ -129,7 +150,6 @@ __device__ void sha256_transform(uint32_t state[8], const uint32_t block[16]) {
     state[4] += e; state[5] += f; state[6] += g; state[7] += h;
 }
 
-// xorshift64* PRNG for generating random passcodes on the GPU
 
 __device__ __forceinline__ uint64_t xorshift64star(uint64_t* s) {
     uint64_t x = *s;
@@ -148,78 +168,97 @@ __global__ void check_passcodes_kernel(
     int*            __restrict__ found_flag,
     uint8_t*        __restrict__ found_passcode)
 {
-    if (*found_flag) return;
+    // Cache found_flag in shared memory: only thread 0 reads from mapped memory,
+    // all others read from fast shared mem — avoids PCIe contention on high-SM GPUs
+    __shared__ int s_found;
+    if (threadIdx.x == 0) s_found = *found_flag;
+    __syncthreads();
+    if (s_found) return;
 
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    uint64_t rng = base_seed ^ ((uint64_t)tid * 6364136223846793005ULL + 1442695040888963407ULL);
-    xorshift64star(&rng); 
-    xorshift64star(&rng);
+    #pragma unroll 1
+    for (int attempt = 0; attempt < HASHES_PER_THREAD; attempt++) {
+        // Re-check via shared mem every iteration (thread 0 refreshes)
+        if (threadIdx.x == 0) s_found = *found_flag;
+        __syncthreads();
+        if (s_found) return;
 
-    uint8_t passcode[32];
-    {
-        uint64_t r0 = xorshift64star(&rng);
-        uint64_t r1 = xorshift64star(&rng);
-        uint64_t r2 = xorshift64star(&rng);
-        uint64_t r3 = xorshift64star(&rng);
+        uint64_t rng = base_seed ^ (((uint64_t)tid * HASHES_PER_THREAD + attempt)
+                       * 6364136223846793005ULL + 1442695040888963407ULL);
+        xorshift64star(&rng);
+        xorshift64star(&rng);
+
+        uint8_t passcode[32];
+        {
+            uint64_t r0 = xorshift64star(&rng);
+            uint64_t r1 = xorshift64star(&rng);
+            uint64_t r2 = xorshift64star(&rng);
+            uint64_t r3 = xorshift64star(&rng);
+            #pragma unroll
+            for (int i = 0; i < 8; i++) {
+                passcode[i]      = d_CHARSET[(r0 >> (i * 8)) & 0x3F];
+                passcode[8 + i]  = d_CHARSET[(r1 >> (i * 8)) & 0x3F];
+                passcode[16 + i] = d_CHARSET[(r2 >> (i * 8)) & 0x3F];
+                passcode[24 + i] = d_CHARSET[(r3 >> (i * 8)) & 0x3F];
+            }
+        }
+
+        uint32_t block2[16];
         #pragma unroll
         for (int i = 0; i < 8; i++) {
-            passcode[i]      = d_CHARSET[(r0 >> (i * 8)) & 0x3F];
-            passcode[8 + i]  = d_CHARSET[(r1 >> (i * 8)) & 0x3F];
-            passcode[16 + i] = d_CHARSET[(r2 >> (i * 8)) & 0x3F];
-            passcode[24 + i] = d_CHARSET[(r3 >> (i * 8)) & 0x3F];
+            block2[i] = ((uint32_t)passcode[i * 4    ] << 24)
+                      | ((uint32_t)passcode[i * 4 + 1] << 16)
+                      | ((uint32_t)passcode[i * 4 + 2] <<  8)
+                      | ((uint32_t)passcode[i * 4 + 3]);
         }
-    }
+        block2[8]  = 0x80000000u;
+        block2[9]  = 0; block2[10] = 0; block2[11] = 0;
+        block2[12] = 0; block2[13] = 0; block2[14] = 0;
+        block2[15] = 0x00000300u; // 96 * 8 = 768 bits
 
-    uint32_t block2[16];
-    #pragma unroll
-    for (int i = 0; i < 8; i++) {
-        block2[i] = ((uint32_t)passcode[i * 4    ] << 24)
-                  | ((uint32_t)passcode[i * 4 + 1] << 16)
-                  | ((uint32_t)passcode[i * 4 + 2] <<  8)
-                  | ((uint32_t)passcode[i * 4 + 3]);
-    }
-    block2[8]  = 0x80000000u;
-    block2[9]  = 0; block2[10] = 0; block2[11] = 0;
-    block2[12] = 0; block2[13] = 0; block2[14] = 0;
-    block2[15] = 0x00000300u; // 96 * 8 = 768 bits
+        uint32_t state[8];
+        #pragma unroll
+        for (int i = 0; i < 8; i++) state[i] = midstate[i];
 
-    uint32_t state[8];
-    #pragma unroll
-    for (int i = 0; i < 8; i++) state[i] = midstate[i];
+        sha256_transform(state, block2);
 
-    sha256_transform(state, block2);
-    //   Single block: [dk0 32B] [0x80] [zeros 23B] [BE64 bit-length = 0x0100 = 256]
-    uint32_t dk0_block[16];
-    #pragma unroll
-    for (int i = 0; i < 8; i++) dk0_block[i] = state[i];
-    dk0_block[8]  = 0x80000000u;
-    dk0_block[9]  = 0; dk0_block[10] = 0; dk0_block[11] = 0;
-    dk0_block[12] = 0; dk0_block[13] = 0; dk0_block[14] = 0;
-    dk0_block[15] = 0x00000100u; // 32 * 8 = 256 bits
+        // dk0 digest: SHA256(dk0) where dk0 = state after transform
+        uint32_t dk0_block[16];
+        #pragma unroll
+        for (int i = 0; i < 8; i++) dk0_block[i] = state[i];
+        dk0_block[8]  = 0x80000000u;
+        dk0_block[9]  = 0; dk0_block[10] = 0; dk0_block[11] = 0;
+        dk0_block[12] = 0; dk0_block[13] = 0; dk0_block[14] = 0;
+        dk0_block[15] = 0x00000100u; // 32 * 8 = 256 bits
 
-    uint32_t sha_dk0[8];
-    #pragma unroll
-    for (int i = 0; i < 8; i++) sha_dk0[i] = d_H0[i];
+        uint32_t sha_dk0[8];
+        #pragma unroll
+        for (int i = 0; i < 8; i++) sha_dk0[i] = d_H0[i];
 
-    sha256_transform(sha_dk0, dk0_block);
+        sha256_transform(sha_dk0, dk0_block);
 
-    bool match = true;
-    #pragma unroll
-    for (int i = 0; i < 8; i++) {
-        if ((sha_dk0[i] ^ state[i]) != expected_digest[i]) {
-            match = false;
-            break;
-        }
-    }
-
-    if (match) {
-        if (atomicCAS(found_flag, 0, 1) == 0) {
+        // early exit if first 32 bits don't match
+        bool match = ((sha_dk0[0] ^ state[0]) == expected_digest[0]);
+        if (match) {
             #pragma unroll
-            for (int i = 0; i < 32; i++)
-                found_passcode[i] = passcode[i];
+            for (int i = 1; i < 8; i++) {
+                if ((sha_dk0[i] ^ state[i]) != expected_digest[i]) {
+                    match = false;
+                    break;
+                }
+            }
         }
-    }
+
+        if (match) {
+            if (atomicCAS(found_flag, 0, 1) == 0) {
+                #pragma unroll
+                for (int i = 0; i < 32; i++)
+                    found_passcode[i] = passcode[i];
+            }
+            return;
+        }
+    } 
 }
 
 
@@ -336,7 +375,40 @@ std::string gpu_device_name(int device_id) {
     return std::string(prop.name);
 }
 
-// Per-GPU worker: runs the bruteforce loop on a single device
+
+// faster code
+bool check_passcode(const PkgCryptoData& data, const char* passcode) {
+    uint8_t index_bytes[4] = {0, 0, 0, 0};
+    uint8_t sha_index[32];
+    sha256_host(index_bytes, 4, sha_index);
+
+    uint8_t cid_padded[48];
+    memset(cid_padded, 0, 48);
+    size_t cid_len = strlen(data.content_id);
+    if (cid_len > 48) cid_len = 48;
+    memcpy(cid_padded, data.content_id, cid_len);
+    uint8_t sha_cid[32];
+    sha256_host(cid_padded, 48, sha_cid);
+
+    uint8_t msg[96];
+    memcpy(msg,      sha_index,  32);
+    memcpy(msg + 32, sha_cid,    32);
+    memcpy(msg + 64, passcode,   32);
+
+    uint8_t dk0[32];
+    sha256_host(msg, 96, dk0);
+
+    // digest = SHA256(dk0) XOR dk0
+    uint8_t sha_dk0[32];
+    sha256_host(dk0, 32, sha_dk0);
+
+    for (int i = 0; i < 32; i++)
+        sha_dk0[i] ^= dk0[i];
+
+    return memcmp(sha_dk0, data.expected_digest, 32) == 0;
+}
+
+
 static void gpu_worker(
     int device_id,
     const uint32_t* midstate,
@@ -356,13 +428,22 @@ static void gpu_worker(
         return;
     }
 
-    const int batch_size        = 1 << batch_size_log2;
+    // --- Auto-tuner state ---
+    int current_log2 = batch_size_log2;
     const int threads_per_block = 256;
-    const int num_blocks        = batch_size / threads_per_block;
 
+    // --- Device memory (read-only constants) ---
     uint32_t *d_midstate = nullptr, *d_expected = nullptr;
-    int      *d_found_flag = nullptr;
-    uint8_t  *d_found_passcode = nullptr;
+
+    // --- Zero-copy mapped memory (no cudaMemcpy needed to read results) ---
+    int     *h_found_flag     = nullptr;   // host-side pinned pointer
+    uint8_t *h_found_passcode = nullptr;   // host-side pinned pointer
+    int     *d_found_flag     = nullptr;   // device-accessible pointer (mapped)
+    uint8_t *d_found_passcode = nullptr;   // device-accessible pointer (mapped)
+
+    // --- CUDA stream + events for async execution & timing ---
+    cudaStream_t stream  = nullptr;
+    cudaEvent_t ev_start = nullptr, ev_stop = nullptr;
 
     auto check = [&](cudaError_t e, const char* file, int line) -> bool {
         if (e != cudaSuccess) {
@@ -375,44 +456,72 @@ static void gpu_worker(
     };
     #define GPU_CHECK(call) if (!check((call), __FILE__, __LINE__)) goto cleanup
 
-    GPU_CHECK(cudaMalloc(&d_midstate,        8 * sizeof(uint32_t)));
-    GPU_CHECK(cudaMalloc(&d_expected,        8 * sizeof(uint32_t)));
-    GPU_CHECK(cudaMalloc(&d_found_flag,      sizeof(int)));
-    GPU_CHECK(cudaMalloc(&d_found_passcode,  32));
+    // Allocate device memory for constants
+    GPU_CHECK(cudaMalloc(&d_midstate, 8 * sizeof(uint32_t)));
+    GPU_CHECK(cudaMalloc(&d_expected, 8 * sizeof(uint32_t)));
 
     GPU_CHECK(cudaMemcpy(d_midstate, midstate, 8 * sizeof(uint32_t), cudaMemcpyHostToDevice));
     GPU_CHECK(cudaMemcpy(d_expected, expected, 8 * sizeof(uint32_t), cudaMemcpyHostToDevice));
-    {
-        int zero = 0;
-        GPU_CHECK(cudaMemcpy(d_found_flag, &zero, sizeof(int), cudaMemcpyHostToDevice));
-    }
+
+    // Allocate zero-copy (mapped) pinned memory for results
+    GPU_CHECK(cudaHostAlloc(&h_found_flag,     sizeof(int), cudaHostAllocMapped));
+    GPU_CHECK(cudaHostAlloc(&h_found_passcode, 32,          cudaHostAllocMapped));
+    *h_found_flag = 0;
+    memset(h_found_passcode, 0, 32);
+
+    GPU_CHECK(cudaHostGetDevicePointer(&d_found_flag,     h_found_flag,     0));
+    GPU_CHECK(cudaHostGetDevicePointer(&d_found_passcode, h_found_passcode, 0));
+
+    // Create stream and timing events
+    GPU_CHECK(cudaStreamCreate(&stream));
+    GPU_CHECK(cudaEventCreate(&ev_start));
+    GPU_CHECK(cudaEventCreate(&ev_stop));
 
     {
         std::random_device rd;
         std::mt19937_64 host_rng(rd() ^ ((uint64_t)device_id << 32));
 
-        uint64_t batch_num = 0;
+        // Print initial batch size for this GPU
+        {
+            std::lock_guard<std::mutex> lock(output_mutex);
+            std::cout << "[+] GPU " << device_id << ": starting with batch 2^"
+                      << current_log2 << " (" << (1 << current_log2)
+                      << " threads x " << HASHES_PER_THREAD << " hashes/thread)" << std::endl;
+        }
 
         while (!passcode_found.load(std::memory_order_relaxed)) {
-            uint64_t base_seed = host_rng();
+            const int batch_size = 1 << current_log2;
+            const int num_blocks = batch_size / threads_per_block;
+            uint64_t base_seed   = host_rng();
 
-            check_passcodes_kernel<<<num_blocks, threads_per_block>>>(
+            // Time the kernel for auto-tuning
+            GPU_CHECK(cudaEventRecord(ev_start, stream));
+
+            check_passcodes_kernel<<<num_blocks, threads_per_block, 0, stream>>>(
                 d_midstate, d_expected, base_seed, d_found_flag, d_found_passcode);
 
-            GPU_CHECK(cudaDeviceSynchronize());
+            GPU_CHECK(cudaEventRecord(ev_stop, stream));
+            GPU_CHECK(cudaEventSynchronize(ev_stop));
 
-            global_attempts.fetch_add((uint64_t)batch_size, std::memory_order_relaxed);
-            batch_num++;
+            // Each thread does HASHES_PER_THREAD passcodes
+            global_attempts.fetch_add(
+                (uint64_t)batch_size * HASHES_PER_THREAD, std::memory_order_relaxed);
 
-            int h_found = 0;
-            GPU_CHECK(cudaMemcpy(&h_found, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost));
+            // --- Auto-tuner: adjust batch size based on kernel timing ---
+            float kernel_ms = 0.0f;
+            GPU_CHECK(cudaEventElapsedTime(&kernel_ms, ev_start, ev_stop));
 
-            if (h_found) {
-                uint8_t h_passcode[32];
-                GPU_CHECK(cudaMemcpy(h_passcode, d_found_passcode, 32, cudaMemcpyDeviceToHost));
+            if (kernel_ms < AUTOTUNE_TARGET_MS_LOW && current_log2 < AUTOTUNE_MAX_LOG2) {
+                current_log2++;
+            } else if (kernel_ms > AUTOTUNE_TARGET_MS_HIGH && current_log2 > AUTOTUNE_MIN_LOG2) {
+                current_log2--;
+            }
+
+            // --- Check for match via zero-copy (no cudaMemcpy!) ---
+            if (*h_found_flag) {
                 {
                     std::lock_guard<std::mutex> lock(output_mutex);
-                    out_result = std::string(reinterpret_cast<char*>(h_passcode), 32);
+                    out_result = std::string(reinterpret_cast<char*>(h_found_passcode), 32);
                 }
                 passcode_found.store(true, std::memory_order_release);
                 break;
@@ -421,10 +530,13 @@ static void gpu_worker(
     }
 
 cleanup:
-    if (d_midstate)       cudaFree(d_midstate);
-    if (d_expected)       cudaFree(d_expected);
-    if (d_found_flag)     cudaFree(d_found_flag);
-    if (d_found_passcode) cudaFree(d_found_passcode);
+    if (ev_stop)           cudaEventDestroy(ev_stop);
+    if (ev_start)          cudaEventDestroy(ev_start);
+    if (stream)            cudaStreamDestroy(stream);
+    if (d_midstate)        cudaFree(d_midstate);
+    if (d_expected)        cudaFree(d_expected);
+    if (h_found_flag)      cudaFreeHost(h_found_flag);
+    if (h_found_passcode)  cudaFreeHost(h_found_passcode);
     #undef GPU_CHECK
 }
 
@@ -477,7 +589,6 @@ std::string gpu_brute_force(
                     | ((uint32_t)data.expected_digest[i*4 + 3]);
     }
 
-    // Shared state
     std::mutex output_mutex;
     std::atomic<uint64_t> global_attempts{0};
     std::string result;
@@ -492,7 +603,6 @@ std::string gpu_brute_force(
             std::ref(result), std::ref(output_mutex), std::ref(global_attempts));
     }
 
-    // Status reporting from the main thread
     auto start_time = std::chrono::steady_clock::now();
     while (!passcode_found.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::seconds(2));

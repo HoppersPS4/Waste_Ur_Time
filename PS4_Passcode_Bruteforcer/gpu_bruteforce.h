@@ -4,17 +4,16 @@
 #include <cstdint>
 #include <atomic>
 
-// Data extracted from a PS4 PKG file needed for GPU-accelerated passcode bruteforce.
-// Obtained by parsing the PKG header and ENTRY_KEYS entry.
 struct PkgCryptoData {
     char content_id[37];          // 36-char Content ID + null terminator
     uint8_t expected_digest[32];  // Keys[0].digest = SHA256(dk0) XOR dk0 from ENTRY_KEYS
     bool valid = false;
 };
 
-// Parse a PS4 PKG file and extract the crypto data needed for GPU bruteforce.
 // Returns true on success.
 bool parse_pkg_crypto_data(const std::string& pkg_path, PkgCryptoData& out);
+
+bool check_passcode(const PkgCryptoData& data, const char* passcode);
 
 #ifdef USE_CUDA
 
@@ -34,7 +33,7 @@ std::string gpu_brute_force(
     const PkgCryptoData& data,
     std::atomic<bool>& passcode_found,
     bool silence_mode,
-    int batch_size_log2 = 23 // 2^23 = ~8M passcodes per kernel launch
+    int batch_size_log2 = 23
 );
 
 #else
