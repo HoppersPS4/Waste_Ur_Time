@@ -9,12 +9,53 @@ Welcome 'Waste_Ur_Time,' a program that takes on the seemingly impossible task o
 # Features
   - Able to Bruteforce (Added in v1.00) ✅
   - Auto Detect (PS4/PS5)
+  - CUDA GPU Acceleration (PS4 PKGs) ✅
+  - Multi-GPU support (automatically uses all available CUDA GPUs)
+  - Auto-tuning batch sizes for optimal GPU performance
+  - Multi-threaded CPU bruteforce with configurable thread count
+  - RocksDB progress tracking (CPU mode) - stop and resume without losing progress
+  - Silence Mode for minimal output
+  - CMake & Visual Studio build support
+
+# Usage
+
+```
+Waste_Ur_Time.exe <package> <output> [--silence] [--gpu] [-t <threads>]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `<package>` | The package file to brute force |
+| `<output>` | Output directory |
+| `--silence` | Activates 'Silence Mode' for minimal output |
+| `--gpu` | Use GPU acceleration (CUDA, PS4 PKGs only) |
+| `-t <threads>` | Sets the number of threads (Default: hardware concurrency or 4) |
+
+# Building
+
+### Visual Studio
+Open `PS4_Passcode_Bruteforcer.sln` and build. Requires CUDA Toolkit for GPU support.
+
+### CMake
+```
+cmake -B build
+cmake --build build
+```
+CUDA is auto-detected. If not found, builds in CPU-only mode.
+
+# Requirements
+  - `orbis-pub-cmd.exe` for PS4 packages
+  - `prospero-pub-cmd.exe` for PS5 packages
+  - NVIDIA GPU + CUDA Toolkit (for `--gpu` mode)
+  - RocksDB (fetched automatically with CMake)
 
 # Updates
 
-GPU Support added by ![@Pcniado](https://github.com/Pcniado)
-09/02/2026
-![GPU Version](https://github.com/Pcniado/ps4-bruteforcer-speedy/)
+GPU Support added by [@Pcniado](https://github.com/Pcniado)
+
+02/09/2026
+- Full CUDA GPU bruteforce (PS4 PKGs) - no more shelling out to orbis-pub-cmd for each attempt
+- Multi-GPU support - spawns one worker thread per GPU
 
 27/06/2024
 - Made a few changes, added an Auto Detect feature for PS4/PS5 packages.
@@ -54,5 +95,5 @@ GPU Support added by ![@Pcniado](https://github.com/Pcniado)
   - Inital Release
 
 # Known Issues
---GPU is disabled for now, it broke with the PS5 Update.<br>
-Will be fixed in Full Release.
+- `--gpu` only supports PS4 PKG files for now. PS5 GPU support is not yet implemented.
+- Linux support is experimental/stubbed - the extraction tools are Windows-only.
