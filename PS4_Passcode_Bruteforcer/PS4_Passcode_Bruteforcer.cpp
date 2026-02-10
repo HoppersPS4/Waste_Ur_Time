@@ -189,9 +189,7 @@ void ensure_output_directory(const std::string& output_directory) {
     std::filesystem::create_directories(output_directory);
 }
 
-// ---------------------------------------------------------------------------
-// Native PKG parsing – extract content_id and Keys[0].digest for GPU mode
-// ---------------------------------------------------------------------------
+
 
 static uint32_t read_be32(const uint8_t* p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
@@ -505,21 +503,20 @@ void brute_force_passcode_gpu(const std::string& input_file, const std::string& 
     package_cid = std::string(crypto.content_id);
     std::cout << "[+] Content ID: " << package_cid << std::endl;
 
-    // Print expected digest for debug
     std::cout << "[+] Keys[0].digest: ";
     for (int i = 0; i < 32; i++)
         std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)crypto.expected_digest[i];
     std::cout << std::dec << std::endl;
 
     std::string result = gpu_brute_force(crypto, passcode_found, silence_mode);
-
     if (!result.empty()) {
         found_passcode = result;
+    }
 
-        // Verify + extract using the official tool if available
+    if (!found_passcode.empty()) {
         if (CheckExecutable("orbis-pub-cmd.exe")) {
             std::cout << "[+] Verifying passcode and extracting PKG..." << std::endl;
-            std::string cmd = "orbis-pub-cmd.exe img_extract --passcode " + result
+            std::string cmd = "orbis-pub-cmd.exe img_extract --passcode " + found_passcode
                             + " \"" + input_file + "\" \"" + output_directory + "\"";
             ProcessResult pr = ExecuteCommand(cmd);
             if (pr.returnCode == 0) {
@@ -531,7 +528,7 @@ void brute_force_passcode_gpu(const std::string& input_file, const std::string& 
             }
         } else {
             std::cout << "[!] orbis-pub-cmd.exe not found. Run extraction manually with passcode: "
-                      << result << std::endl;
+                      << found_passcode << std::endl;
         }
     }
 }

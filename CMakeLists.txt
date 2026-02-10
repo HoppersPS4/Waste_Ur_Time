@@ -53,7 +53,8 @@ if(CUDA_AVAILABLE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE USE_CUDA)
     set_target_properties(${PROJECT_NAME} PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
-        CUDA_ARCHITECTURES "50;52;60;61;70;75;80;86;89;90"
+        CUDA_ARCHITECTURES "75;80;86;89;90"
+        CUDA_FLAGS "--use_fast_math --maxrregcount=128"
     )
 endif()
 
