@@ -13,7 +13,7 @@
 #include <vector>
 
 
-#define HASHES_PER_THREAD 4 // 4 for now but 
+#define HASHES_PER_THREAD 4 // 4 for now but could be made more
 
 static constexpr float AUTOTUNE_TARGET_MS_LOW  = 30.0f; 
 static constexpr float AUTOTUNE_TARGET_MS_HIGH = 100.0f; 
