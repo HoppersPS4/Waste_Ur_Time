@@ -168,13 +168,21 @@ __global__ void check_passcodes_kernel(
     int*            __restrict__ found_flag,
     uint8_t*        __restrict__ found_passcode)
 {
-    if (*found_flag) return;
+    // Cache found_flag in shared memory: only thread 0 reads from mapped memory,
+    // all others read from fast shared mem — avoids PCIe contention on high-SM GPUs
+    __shared__ int s_found;
+    if (threadIdx.x == 0) s_found = *found_flag;
+    __syncthreads();
+    if (s_found) return;
 
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    #pragma unroll
+    #pragma unroll 1
     for (int attempt = 0; attempt < HASHES_PER_THREAD; attempt++) {
-        if (*found_flag) return;
+        // Re-check via shared mem every iteration (thread 0 refreshes)
+        if (threadIdx.x == 0) s_found = *found_flag;
+        __syncthreads();
+        if (s_found) return;
 
         uint64_t rng = base_seed ^ (((uint64_t)tid * HASHES_PER_THREAD + attempt)
                        * 6364136223846793005ULL + 1442695040888963407ULL);

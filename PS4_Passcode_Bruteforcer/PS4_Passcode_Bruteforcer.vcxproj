@@ -145,7 +145,7 @@
       <AdditionalDependencies>cudart.lib;Rpcrt4.lib;Shlwapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <CudaCompile>
-      <AdditionalOptions>-allow-unsupported-compiler --use_fast_math --maxrregcount=128 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>-allow-unsupported-compiler --use_fast_math %(AdditionalOptions)</AdditionalOptions>
       <CodeGeneration>compute_75,sm_75;compute_86,sm_86;compute_89,sm_89;compute_90,sm_90;compute_100,sm_100</CodeGeneration>
     </CudaCompile>
   </ItemDefinitionGroup>

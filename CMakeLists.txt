@@ -54,7 +54,7 @@ if(CUDA_AVAILABLE)
     set_target_properties(${PROJECT_NAME} PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_ARCHITECTURES "75;80;86;89;90"
-        CUDA_FLAGS "--use_fast_math --maxrregcount=128"
+        CUDA_FLAGS "--use_fast_math"
     )
 endif()
 
